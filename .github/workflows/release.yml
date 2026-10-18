@@ -1,10 +1,13 @@
 name: release
 
-# 推送 v* 标签就自动：编译 C 内核 → 跑测试 → 打 wheel → 创建 Release →（可选）发 PyPI
+# 推送 v* 标签就自动：编译 C 内核 → 跑测试 → 打 wheel → 创建 GitHub Release → 发布到 PyPI
 #
 # 用法：
 #   git tag v1.0.0
 #   git push origin v1.0.0
+#
+# 注意：PyPI 不允许覆盖同名版本。如果这个版本已经发过，
+# publish-pypi 任务会自动跳过而不是报错（见下方的"检查版本是否已发布"）。
 
 on:
   push:
@@ -123,18 +126,50 @@ jobs:
             装好之后 `import pythonpp` 即可。注意 **PyPI 包名和导入名不一样**：
             PyPI 上叫 `pythonpp-plus`，代码里写 `import pythonpp`。
 
-  # 发布到 PyPI：在仓库设置里配好 Trusted Publishing 后取消注释
-  # publish-pypi:
-  #   needs: [build-windows, build-pure, build-sdist]
-  #   runs-on: ubuntu-latest
-  #   environment: pypi
-  #   permissions:
-  #     id-token: write
-  #   steps:
-  #     - uses: actions/download-artifact@v4
-  #       with:
-  #         path: artifacts
-  #     - run: |
-  #         mkdir -p dist
-  #         find artifacts -type f \( -name '*.whl' -o -name '*.tar.gz' \) -exec cp {} dist/ \;
-  #     - uses: pypa/gh-action-pypi-publish@release/v1
+  publish-pypi:
+    name: 发布到 PyPI
+    needs: [build-windows, build-pure, build-sdist]
+    runs-on: ubuntu-latest
+    # 这个 environment 名字必须和 PyPI 上 Pending publisher 里填的
+    # "Environment name" 完全一致，否则 OIDC 认证会失败。
+    environment:
+      name: pypi
+      url: https://pypi.org/project/pythonpp-plus/
+    permissions:
+      # Trusted Publishing 靠这个权限拿到 GitHub 签发的 OIDC 令牌
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: 汇总产物
+        run: |
+          mkdir -p dist
+          find artifacts -type f \( -name '*.whl' -o -name '*.tar.gz' \) -exec cp {} dist/ \;
+          ls -lh dist
+
+      - name: 检查该版本是否已经发布过
+        id: check
+        run: |
+          # 从 wheel 文件名里取出版本号，再看 PyPI 是否已有这个版本。
+          # 已存在就跳过，避免重复上传导致整个流程失败。
+          WHEEL=$(ls dist/*.whl | head -n 1)
+          VERSION=$(basename "$WHEEL" | cut -d- -f2)
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          CODE=$(curl -s -o /dev/null -w '%{http_code}' \
+            "https://pypi.org/pypi/pythonpp-plus/$VERSION/json")
+          if [ "$CODE" = "200" ]; then
+            echo "pythonpp-plus $VERSION 已经发布过了，跳过上传"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "pythonpp-plus $VERSION 尚未发布，准备上传"
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: 发布
+        if: steps.check.outputs.skip == 'false'
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          # 不配置 API Token，走 OpenID Connect 身份认证
+          packages-dir: dist/

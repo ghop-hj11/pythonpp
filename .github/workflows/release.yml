@@ -1,0 +1,140 @@
+name: release
+
+# 推送 v* 标签就自动：编译 C 内核 → 跑测试 → 打 wheel → 创建 Release →（可选）发 PyPI
+#
+# 用法：
+#   git tag v1.0.0
+#   git push origin v1.0.0
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    name: Windows wheel（含 C 内核）
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 安装打包工具
+        run: python -m pip install --upgrade pip setuptools wheel
+
+      - name: 编译 C 内核
+        run: python build_native.py --fetch-zig
+
+      - name: 测试
+        run: python test_pythonpp.py
+
+      - name: 构建 wheel（稳定 ABI 标签）
+        # setup.py 的 get_tag() 已经写死 cp38-abi3，这里不用再传参数
+        run: python setup.py bdist_wheel
+
+      - name: 确认标签正确
+        shell: pwsh
+        run: |
+          $whl = Get-ChildItem dist\*.whl | Select-Object -First 1
+          Write-Host "产物：$($whl.Name)"
+          if ($whl.Name -notmatch 'cp38-abi3-win_amd64') {
+            throw "wheel 标签不对：$($whl.Name)，应当是 cp38-abi3-win_amd64"
+          }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-wheel
+          path: dist/*.whl
+
+  build-pure:
+    name: 纯 Python wheel（其它平台用）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 安装打包工具
+        run: python -m pip install --upgrade pip setuptools wheel
+
+      - name: 移除原生扩展，强制纯 Python 版本
+        run: rm -f pythonpp/*.pyd pythonpp/*.so
+
+      - name: 构建
+        run: python setup.py bdist_wheel
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pure-wheel
+          path: dist/*.whl
+
+  build-sdist:
+    name: 源码包
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install --upgrade pip setuptools wheel
+      - run: python setup.py sdist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sdist
+          path: dist/*.tar.gz
+
+  release:
+    name: 创建 GitHub Release
+    needs: [build-windows, build-pure, build-sdist]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: 汇总
+        run: |
+          mkdir -p dist
+          find artifacts -type f \( -name '*.whl' -o -name '*.tar.gz' \) -exec cp {} dist/ \;
+          ls -lh dist
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
+          body: |
+            ## 安装
+
+            ```bash
+            pip install pythonpp_plus-1.0.0-cp38-abi3-win_amd64.whl
+            ```
+
+            `cp38-abi3` 表示「Python 3.8 及以上通用」，同一个文件在 3.8 ~ 3.14 都能用。
+
+            装好之后 `import pythonpp` 即可。注意 **PyPI 包名和导入名不一样**：
+            PyPI 上叫 `pythonpp-plus`，代码里写 `import pythonpp`。
+
+  # 发布到 PyPI：在仓库设置里配好 Trusted Publishing 后取消注释
+  # publish-pypi:
+  #   needs: [build-windows, build-pure, build-sdist]
+  #   runs-on: ubuntu-latest
+  #   environment: pypi
+  #   permissions:
+  #     id-token: write
+  #   steps:
+  #     - uses: actions/download-artifact@v4
+  #       with:
+  #         path: artifacts
+  #     - run: |
+  #         mkdir -p dist
+  #         find artifacts -type f \( -name '*.whl' -o -name '*.tar.gz' \) -exec cp {} dist/ \;
+  #     - uses: pypa/gh-action-pypi-publish@release/v1

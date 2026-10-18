@@ -1,0 +1,48 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pythonpp-plus"
+version = "1.0.0"
+description = "Python 语法 + C 加速：内置常用函数、中文报错、整数循环 JIT"
+readme = "README.md"
+requires-python = ">=3.8"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Python++" }]
+keywords = ["python", "accelerator", "jit", "c-extension", "chinese"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Natural Language :: Chinese (Simplified)",
+    "Operating System :: MacOS",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: C",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Software Development :: Interpreters",
+]
+
+[project.scripts]
+pythonpp = "pythonpp._cli:main"
+pp = "pythonpp._cli:main"
+
+[project.urls]
+Source = "https://github.com/ghop-hj11/pythonpp"
+Issues = "https://github.com/ghop-hj11/pythonpp/issues"
+
+[tool.setuptools]
+packages = ["pythonpp"]
+include-package-data = true
+zip-safe = false
+
+[tool.setuptools.package-data]
+pythonpp = ["pythonpp_native.c", "*.pyd", "*.so"]

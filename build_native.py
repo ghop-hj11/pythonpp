@@ -36,7 +36,19 @@ ZIG_VERSION = "0.15.2"
 
 
 def _log(message):
-    print(f"[build_native] {message}", flush=True)
+    """打印日志。
+
+    注意：Windows 的 CI 环境（以及部分精简系统）控制台编码是 cp1252，
+    直接 print 中文会抛 UnicodeEncodeError 把构建整个搞挂。
+    这里做了兜底：编码不了就退化成转义输出，绝不让日志拖垮构建。
+    """
+    text = f"[build_native] {message}"
+    try:
+        print(text, flush=True)
+    except UnicodeEncodeError:
+        encoding = sys.stdout.encoding or "ascii"
+        safe = text.encode(encoding, "backslashreplace").decode(encoding, "replace")
+        print(safe, flush=True)
 
 
 def _run(cmd, **kwargs):

@@ -63,6 +63,12 @@ from ._calcs import (
     stdev,
     variance,
 )
+from ._console import ensure_utf8_console
+
+# 包一被导入就把控制台编码兜底好。
+# 这样用户 print 中文、看中文报错时，不会因为终端是 cp1252/cp437 而崩掉。
+ensure_utf8_console()
+
 from ._errors import (
     PPError,
     PPCompileError,

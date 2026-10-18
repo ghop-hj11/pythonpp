@@ -5,15 +5,24 @@
 
 ## 安装
 
+**目前推荐用 GitHub 直链安装**（已发布 v1.0.0，Windows x64 带 C 加速）：
+
 ```bash
-pip install pythonpp-plus
+pip install https://github.com/ghop-hj11/pythonpp/releases/download/v1.0.0/pythonpp_plus-1.0.0-cp38-abi3-win_amd64.whl
 ```
 
-> ⚠️ **包名和导入名不一样**，这是唯一需要留意的点：
+也可以打开 [Releases 页面](https://github.com/ghop-hj11/pythonpp/releases) 挑对应文件下载后安装：
+
+| 你的情况 | 下哪个文件 |
+|---|---|
+| Windows 64 位、想要 C 加速 | `pythonpp_plus-1.0.0-cp38-abi3-win_amd64.whl` |
+| Mac / Linux，或只要功能 | `pythonpp_plus-1.0.0-py3-none-any.whl` |
+
+> **包名和导入名不一样**，这是唯一需要留意的点：
 >
 > | | 名字 |
 > |---|---|
-> | `pip install` 时写的 | `pythonpp-plus` |
+> | 安装文件里写的 | `pythonpp_plus` |
 > | 代码里 `import` 的 | `pythonpp` |
 >
 > 为什么？因为 PyPI 上的 `pythonpp` 这个名字已经被另一个同名项目占用了，

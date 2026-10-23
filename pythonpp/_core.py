@@ -33,7 +33,7 @@ from . import _builtins as pp_builtins
 from ._errors import PPCompileError, PPRuntimeError, explain_error
 from ._native import native
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 __all__ = ["Lang", "MemPool", "PoolStats", "RunResult", "__version__"]
 

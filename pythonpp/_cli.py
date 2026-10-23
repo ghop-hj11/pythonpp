@@ -125,10 +125,24 @@ def show_info():
     print()
     print("检查项：")
     print(f"  Python      ：{sys.version.split()[0]}")
-    print(f"  原生内核    ：{_native.backend}（{_native.native.info().get('version')}）")
+    diag = _native.diagnostics()
+    if diag["is_native"]:
+        src = diag.get("loaded_from") or "未知"
+        print(f"  原生内核    ：{diag['backend']} v{diag.get('version')}（{diag.get('native_platform')}/{diag.get('native_arch')}）")
+        print(f"  内核文件    ：{src}")
+        # ABI 一致性自检：原生内核编译目标 vs 当前运行环境
+        run_arch = diag["arch"]
+        native_arch = diag.get("native_arch")
+        if native_arch and native_arch != "unknown" and native_arch != run_arch:
+            print(f"  ⚠ ABI 不匹配 ：内核是 {native_arch}，但当前解释器是 {run_arch}")
+        else:
+            print(f"  ABI 一致性  ：内核架构 {native_arch} == 解释器架构 {run_arch} ✓")
+    else:
+        print(f"  原生内核    ：{diag['backend']}（未加载，纯 Python 回退）")
+        print("                提示：pip install pythonpp-plus（带预编译内核的 wheel）即可启用加速")
     print(f"  C 编译器    ：{_cjit.explain_unavailable()}")
     print(f"  JIT 缓存目录：{_cjit.Compiler().cache_dir}")
-    print(f"  平台        ：{sys.platform}")
+    print(f"  平台/架构   ：{sys.platform} / {diag['arch']}")
     try:
         from ._rand import random
 

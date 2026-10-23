@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pythonpp-plus"
-version = "1.0.0"
+version = "1.1.0"
 description = "Python 语法 + C 加速：内置常用函数、中文报错、整数循环 JIT"
 readme = "README.md"
 requires-python = ">=3.8"

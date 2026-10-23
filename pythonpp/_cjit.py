@@ -13,6 +13,7 @@ from __future__ import annotations
 import ctypes
 import hashlib
 import os
+import platform
 import shutil
 import subprocess
 import sys
@@ -54,6 +55,20 @@ def _cache_candidates():
     yield Path(__file__).resolve().parent.parent / ".jitcache"
 
 
+def _machine_tag():
+    """返回稳定的「平台-架构」标签，用于隔离缓存。
+
+    JIT 编译出的动态库是平台/架构相关的（.dll / .so，且 ABI 不同）。
+    缓存目录按平台+架构分一层，能避免同一缓存目录被不同机器/容器挂载时
+    加载到别人的二进制导致崩溃。
+    """
+    machine = platform.machine().lower()
+    arch = {"amd64": "x86_64", "x86_64": "x86_64", "arm64": "aarch64", "aarch64": "aarch64"}.get(
+        machine, machine
+    )
+    return f"{sys.platform}-{arch}"
+
+
 def _cache_root() -> Path:
     """挑第一个真的能写的缓存目录。
 
@@ -63,14 +78,15 @@ def _cache_root() -> Path:
     """
     for candidate in _cache_candidates():
         try:
-            candidate.mkdir(parents=True, exist_ok=True)
-            probe = candidate / ".write_probe"
+            root = candidate / _machine_tag()
+            root.mkdir(parents=True, exist_ok=True)
+            probe = root / ".write_probe"
             probe.write_text("", encoding="utf-8")
             probe.unlink(missing_ok=True)
-            return candidate
+            return root
         except OSError:
             continue
-    return Path(tempfile.gettempdir()) / "pythonpp" / "cjit"
+    return Path(tempfile.gettempdir()) / "pythonpp" / "cjit" / _machine_tag()
 
 
 def _find_compiler():
@@ -90,9 +106,23 @@ def _find_compiler():
     candidates += [
         str(here / ".zig" / "ziglang" / "zig.exe"),
         str(here / ".zig" / "ziglang" / "zig"),
+        str(here / ".zig" / "pip" / "ziglang" / "zig.exe"),
+        str(here / ".zig" / "pip" / "ziglang" / "zig"),
         str(here.parent / ".zig" / "ziglang" / "zig.exe"),
         str(here.parent / ".zig" / "ziglang" / "zig"),
+        str(here.parent / ".zig" / "pip" / "ziglang" / "zig.exe"),
+        str(here.parent / ".zig" / "pip" / "ziglang" / "zig"),
     ]
+    # pip install ziglang 装的包：真正的 zig 二进制在包目录下（`zig` 不是控制台命令）
+    try:
+        import ziglang
+
+        for name in ("zig.exe", "zig"):
+            exe = Path(ziglang.__file__).parent / name
+            if exe.exists():
+                candidates.append(str(exe))
+    except Exception:  # noqa: BLE001 - ziglang 未安装
+        pass
     for path in candidates:
         if path and Path(path).exists():
             return ([path, "cc"], f"zig cc ({path})")

@@ -28,7 +28,7 @@ git push origin v1.1.0        # 这一下触发 CI
 | `pythonpp_plus-1.1.0-cp38-abi3-manylinux2014_x86_64.whl` | Linux x64 |
 | `pythonpp_plus-1.1.0-cp38-abi3-manylinux2014_aarch64.whl` | Linux ARM64 |
 | `pythonpp_plus-1.1.0-cp38-abi3-macosx_11_0_arm64.whl` | macOS Apple Silicon |
-| `pythonpp_plus-1.1.0-cp38-abi3-macosx_10_9_x86_64.whl` | macOS Intel |
+| `pythonpp_plus-1.1.0-cp38-abi3-macosx_11_0_x86_64.whl` | macOS Intel |
 | `pythonpp_plus-1.1.0-py3-none-any.whl` | 纯 Python（无加速，兜底） |
 
 `cp38-abi3` 表示「Python 3.8 及以上通用」，一个文件覆盖 3.8 ~ 3.14。

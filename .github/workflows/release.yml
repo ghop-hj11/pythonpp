@@ -53,12 +53,12 @@ jobs:
             target: native
             plat_tag: ""
             macos_min: "11.0"
-          # macOS Intel (x86_64)
-          - os: macos-13
-            label: macosx_10_9_x86_64
-            target: native
-            plat_tag: ""
-            macos_min: "10.9"
+          # macOS Intel (x86_64) —— macos-13 runner 已下线，改在 arm64 上用 zig 交叉编译
+          - os: macos-14
+            label: macosx_11_0_x86_64
+            target: x86_64-macos
+            plat_tag: macosx_11_0_x86_64
+            macos_min: "11.0"
 
     steps:
       - uses: actions/checkout@v4
@@ -162,7 +162,7 @@ jobs:
             | Linux x64 | `pip install pythonpp_plus-1.1.0-cp38-abi3-manylinux2014_x86_64.whl` |
             | Linux ARM64 | `pip install pythonpp_plus-1.1.0-cp38-abi3-manylinux2014_aarch64.whl` |
             | macOS Apple Silicon | `pip install pythonpp_plus-1.1.0-cp38-abi3-macosx_11_0_arm64.whl` |
-            | macOS Intel | `pip install pythonpp_plus-1.1.0-cp38-abi3-macosx_10_9_x86_64.whl` |
+            | macOS Intel | `pip install pythonpp_plus-1.1.0-cp38-abi3-macosx_11_0_x86_64.whl` |
 
             没有匹配平台的用户，下载纯 Python 版即可（功能一致，只是没加速）。
 

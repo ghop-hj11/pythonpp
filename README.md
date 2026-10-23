@@ -1,22 +1,26 @@
-# Python++ 1.0
+# Python++ 1.1
 
 > Python 你会多少，Python++ 就会多少。它不改变语法，只是在旁边放了一箱更好用的工具，
 > 并且能在你需要的时候，把慢代码真正编译成机器码。
 
 ## 安装
 
-**目前推荐用 GitHub 直链安装**（已发布 v1.0.0，Windows x64 带 C 加速）：
+**推荐用 GitHub Release 直链安装**（v1.1.0 起提供 5 个平台的 C 加速 wheel）：
 
 ```bash
-pip install https://github.com/ghop-hj11/pythonpp/releases/download/v1.0.0/pythonpp_plus-1.0.0-cp38-abi3-win_amd64.whl
+pip install https://github.com/ghop-hj11/pythonpp/releases/download/v1.1.0/pythonpp_plus-1.1.0-cp38-abi3-win_amd64.whl
 ```
 
 也可以打开 [Releases 页面](https://github.com/ghop-hj11/pythonpp/releases) 挑对应文件下载后安装：
 
 | 你的情况 | 下哪个文件 |
 |---|---|
-| Windows 64 位、想要 C 加速 | `pythonpp_plus-1.0.0-cp38-abi3-win_amd64.whl` |
-| Mac / Linux，或只要功能 | `pythonpp_plus-1.0.0-py3-none-any.whl` |
+| Windows 64 位 | `pythonpp_plus-1.1.0-cp38-abi3-win_amd64.whl` |
+| Linux 64 位 | `pythonpp_plus-1.1.0-cp38-abi3-manylinux2014_x86_64.whl` |
+| Linux ARM64 | `pythonpp_plus-1.1.0-cp38-abi3-manylinux2014_aarch64.whl` |
+| macOS Apple Silicon (M 系列) | `pythonpp_plus-1.1.0-cp38-abi3-macosx_11_0_arm64.whl` |
+| macOS Intel | `pythonpp_plus-1.1.0-cp38-abi3-macosx_10_9_x86_64.whl` |
+| 其它平台 / 只要功能 | `pythonpp_plus-1.1.0-py3-none-any.whl` |
 
 > **包名和导入名不一样**，这是唯一需要留意的点：
 >
@@ -35,7 +39,7 @@ import pythonpp
 print(pythonpp._native.describe())
 ```
 
-看到 `C 内核 1.0.0（稳定 ABI，...）` 就说明原生加速已经生效；
+看到 `C 内核 1.1.0（稳定 ABI，...）` 就说明原生加速已经生效；
 如果显示 `纯 Python 回退`，说明当前平台没有对应的预编译包（功能完全正常，只是慢一点），
 装上 `pip install ziglang` 后重新安装即可启用。
 
@@ -87,8 +91,8 @@ python -m pythonpp --info
 如果屏幕上打印出类似这样的内容，就成功了：
 
 ```
-Python++ 1.0.0  ——  Python 语法 + C 加速
-内核：C 内核 1.0.0（稳定 ABI，Python 3.12.14）
+Python++ 1.1.0  ——  Python 语法 + C 加速
+内核：C 内核 1.1.0（稳定 ABI，Python 3.12.14）
 JIT ：可用
 ...
 ```
@@ -224,10 +228,11 @@ NameError —— 名字 'undefined_var' 没有定义
 
 ```
 D:\Python++\
-├── pythonpp.py          ← 老入口（照样能用，别删）
 ├── pythonpp\            ← 真正的实现，整个文件夹
-├── README.md            ← 你正在看的这份
+├── pyproject.toml       ← 项目元数据（名称、版本、许可证）
+├── setup.py             ← 打包（塞二进制 + 平台标签）
 ├── build_native.py      ← 重新编译 C 内核时用
+├── README.md            ← 你正在看的这份
 └── test_pythonpp.py     ← 自检：python test_pythonpp.py
 ```
 
@@ -240,7 +245,7 @@ D:\Python++\
 
 ## 1. 兼容性：你的老代码不用改
 
-旧版 `pythonpp.py` 的**每一个 API 都还在**，原有代码一行都不用改：
+旧版单文件 `pythonpp.py` 的**每一个 API 都还在**，原有代码一行都不用改：
 
 ```python
 from pythonpp import Lang
@@ -248,14 +253,7 @@ lang = Lang()
 print(lang.touch("test.txt"))
 ```
 
-`pythonpp.py` 现在是一个兼容层，会自动转发到 `pythonpp/` 包。两种写法等价：
-
-```python
-import pythonpp            # 导入兼容层 → 转发到包
-from pythonpp import Lang  # 同上
-```
-
-旧版文件已备份为 `pythonpp_v1_backup.py`。
+只是实现从「单文件」搬进了 `pythonpp/` 包，导入名 `pythonpp` 保持不变。
 
 ## 2. Lang：执行环境
 
@@ -555,16 +553,27 @@ print(L.cat("x"))
 ## 4. 编译 C 内核
 
 ```bash
-python build_native.py                # 自动找 zig/gcc/cl
-python build_native.py --fetch-zig    # 没有编译器就自动下一个 zig（约 90MB）
-python build_native.py --check        # 只检查现有产物
-python build_native.py --clean        # 清理产物
+python build_native.py                       # 自动找 zig/gcc/cl，编译到本机平台
+python build_native.py --fetch-zig           # 没有编译器就自动装一个 zig
+python build_native.py --check               # 只检查现有产物
+python build_native.py --clean               # 清理产物
+python build_native.py --target x86_64-linux-gnu.2.17   # 用 zig 交叉编译 Linux
+python build_native.py --target aarch64-macos           # 用 zig 交叉编译 macOS arm64
 ```
 
 不需要 Visual Studio，也不需要 CMake。**没有编译器也能跑**，只是慢一点。
 
+产物命名按平台自动选择（稳定 ABI，3.8+ 通用）：
+
+| 平台 | 产物 | 说明 |
+|---|---|---|
+| Windows | `pythonpp/_pythonpp_native.pyd` | 链 `python3.lib` 导入库 |
+| Linux | `pythonpp/_pythonpp_native.abi3.so` | 不链 libpython，符号运行期解析 |
+| macOS | `pythonpp/_pythonpp_native.abi3.so` | `-undefined dynamic_lookup`，同上 |
+
 `@jit` 找编译器的顺序：`PYTHONPP_CC` 环境变量 → `PP_ZIG` → PATH 里的
-`zig` → 包目录下的 `.zig/` → `gcc` → `clang`。
+`zig` → 包目录下的 `.zig/` → `pip install ziglang` 装的 zig → `gcc` → `clang`。
+（1.1 起支持自动发现 `pip install ziglang` 的 zig，不在 PATH 里也能用。）
 
 ## 5. 测试
 
@@ -588,7 +597,7 @@ python test_pythonpp.py
 
 ```
 pythonpp/
-├── __init__.py        对外 API
+├── __init__.py        对外 API（含控制台编码兜底）
 ├── __main__.py        python -m pythonpp 入口
 ├── _core.py           Lang + MemPool
 ├── _native.py         C 内核加载 / 纯 Python 回退
@@ -603,14 +612,17 @@ pythonpp/
 ├── _strutil.py        字符串工具
 ├── _misc.py           杂项
 ├── _errors.py         中文报错
+├── _console.py        控制台 UTF-8 兜底
 ├── _bench.py          基准测试
 ├── _cli.py            命令行
 ├── pythonpp_native.c  C 内核源码（单文件）
-└── _pythonpp_native.pyd  编译产物
+└── _pythonpp_native.pyd / .abi3.so   编译产物（按平台）
+pyproject.toml         项目元数据
+setup.py               打包（塞二进制 + 平台标签）
 build_native.py        构建脚本
+_publish_pypi.py       PyPI 发布脚本
+PUBLISHING.md          发布指南
 test_pythonpp.py       测试
-pythonpp.py            兼容层（旧入口）
-pythonpp_v1_backup.py  旧版备份
 ```
 
 ## 2. 环境变量
@@ -623,7 +635,34 @@ pythonpp_v1_backup.py  旧版备份
 | `PP_ZIG` | 指定 zig 路径 |
 | `PYTHONPP_JIT_MIN_WORK` | 触发编译的最小工作量（默认 20000） |
 
-## 3. 常见问题
+## 3. 内核诊断（1.1 新增）
+
+排查「到底加载了哪个内核 / 是不是稳定 ABI」这类问题，不用再猜：
+
+```python
+from pythonpp import _native
+print(_native.diagnostics())
+# {'backend': 'native', 'is_native': True, 'loaded_from': '...\\_pythonpp_native.pyd',
+#  'platform': 'win32', 'arch': 'x86_64', 'version': '1.1.0',
+#  'limited_api': 0x30008, 'native_platform': 'windows', 'native_arch': 'x86_64'}
+```
+
+命令行更直观：
+
+```bash
+python -m pythonpp --info
+# 原生内核：native v1.1.0（windows/x86_64）
+# 内核文件：...\_pythonpp_native.pyd
+# ABI 一致性：内核架构 x86_64 == 解释器架构 x86_64 ✓
+```
+
+`--info` 会对比「内核编译目标架构」和「当前解释器架构」，不一致会直接标 ⚠，
+避免加载到错误平台二进制时一头雾水。
+
+另外 1.1 起，JIT 的磁盘缓存按「平台-架构」分层（如 `win32-x86_64/`），
+同一个缓存目录被多台机器/容器挂载也不会串加载到别人的二进制。
+
+## 4. 常见问题
 
 **Q：它会改变我原来的代码吗？**
 不会。它不修改 Python 本身，也不改语法。你原来的 `.py` 文件照常运行。
@@ -645,11 +684,15 @@ pythonpp_v1_backup.py  旧版备份
 想获得全部速度，`pip install ziglang` 是最省事的办法。
 
 **Q：支持 Mac / Linux 吗？**
-代码是跨平台的（C 内核用稳定 ABI），但目前只在 Windows x64 上完整验证过。
+支持。C 内核用稳定 ABI（`Py_LIMITED_API=3.8`），Windows 上是 `.pyd`、
+Linux / macOS 上是 `.abi3.so`，同一个内核源码在三个平台各自编译一份即可。
+官方 Release 提供 Windows x64 / Linux x64 / Linux ARM64 / macOS Apple Silicon /
+macOS Intel 五个预编译 wheel，`pip install` 即得 C 加速，无需本机装编译器。
+加载器会按平台自动识别正确的后缀，找不到就退回纯 Python（功能不变，只是慢）。
 
-## 4. 版本与验证范围
+## 5. 版本与验证范围
 
-- 当前版本：**1.0.0**
+- 当前版本：**1.1.0**
 - Python 要求：**3.8+**
 
 关于兼容性，说清楚哪些是验证过的、哪些只是设计目标：
@@ -659,6 +702,9 @@ pythonpp_v1_backup.py  旧版备份
 | 在 Python 3.12 / 3.14 上跑完整测试 | **已实测**，109 项全过 |
 | 单个 `.pyd` 同时被 3.12 和 3.14 加载 | **已实测** |
 | 纯 Python 回退路径（`PYTHONPP_NO_NATIVE=1`） | **已实测**，109 项全过 |
+| Windows x64 原生内核（`.pyd`） | **已实测** |
+| Linux x64 / ARM64 原生内核（`.abi3.so`） | 由 CI 在 ubuntu runner 上编译 + 测试 |
+| macOS Apple Silicon / Intel 原生内核 | 由 CI 在 macos runner 上编译 + 测试 |
 | Python 源码兼容 3.8 语法 | 已用 `ast.parse(feature_version=3.8)` 静态检查通过 |
 | 只依赖 3.8 就自带的标准库 | 已逐模块核对，无 3.9+ 专有 API |
 | 在 3.8 ~ 3.11 上实际运行 | **未实测**（本机没有这些版本的解释器） |
@@ -666,7 +712,7 @@ pythonpp_v1_backup.py  旧版备份
 结论：3.8 ~ 3.11 理论上兼容（语法、标准库、稳定 ABI 三条都对得上），
 但请以实际运行结果为准。
 
-## 5. 自己从源码构建
+## 6. 自己从源码构建
 
 如果你想自己编译、自己打包：
 
@@ -676,8 +722,10 @@ python test_pythonpp.py           # 自检
 python setup.py bdist_wheel       # 打包
 ```
 
-产物在 `dist/` 下，文件名形如 `pythonpp_plus-1.0.0-cp38-abi3-win_amd64.whl`。
+产物在 `dist/` 下，文件名形如 `pythonpp_plus-1.1.0-cp38-abi3-win_amd64.whl`。
 
 `cp38-abi3` 表示「Python 3.8 及以上通用」，一个文件就能覆盖 3.8 ~ 3.14。
 这个标签由 `setup.py` 里的 `get_tag()` 自动生成，不需要手动传参数 ——
 传错了会打出 `cp312-cp312-...whl`，那就只有 3.12 能装了。
+
+要发布到 GitHub / PyPI 的完整流程，见 [PUBLISHING.md](PUBLISHING.md)。

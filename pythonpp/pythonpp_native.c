@@ -33,7 +33,24 @@
 #include <string.h>
 #include <time.h>
 
-#define PP_NATIVE_VERSION "1.0.0"
+#define PP_NATIVE_VERSION "1.1.0"
+
+/* 编译期确定的目标平台 / 架构，供 info() 自报家门，方便排查 ABI 兼容问题 */
+#if defined(_WIN32)
+#define PP_PLATFORM "windows"
+#elif defined(__APPLE__)
+#define PP_PLATFORM "macos"
+#else
+#define PP_PLATFORM "linux"
+#endif
+
+#if defined(__x86_64__) || defined(_M_X64)
+#define PP_ARCH "x86_64"
+#elif defined(__aarch64__) || defined(_M_ARM64)
+#define PP_ARCH "aarch64"
+#else
+#define PP_ARCH "unknown"
+#endif
 
 /* 说明：这里刻意不定义 PY_SSIZE_T_CLEAN。
  * 它只影响 "s#" / "y#" 这类带 # 的格式符，而我们一个都没用；
@@ -1057,11 +1074,13 @@ done:
 
 static PyObject *pp_info(PyObject *self, PyObject *args) {
     return Py_BuildValue(
-        "{s:s, s:s, s:i, s:l}",
+        "{s:s, s:s, s:i, s:l, s:s, s:s}",
         "name", "_pythonpp_native",
         "version", PP_NATIVE_VERSION,
         "limited_api", 0x030800,
-        "built_against", (long)PY_VERSION_HEX);
+        "built_against", (long)PY_VERSION_HEX,
+        "platform", PP_PLATFORM,
+        "arch", PP_ARCH);
 }
 
 static PyMethodDef pp_methods[] = {

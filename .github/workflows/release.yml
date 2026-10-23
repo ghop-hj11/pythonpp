@@ -1,10 +1,10 @@
 name: release
 
-# 推送 v* 标签就自动：编译 C 内核 → 跑测试 → 打 wheel → 创建 GitHub Release → 发布到 PyPI
+# 推送 v* 标签就自动：在各平台编译 C 内核 → 跑测试 → 打 wheel → 创建 GitHub Release → 发布到 PyPI
 #
 # 用法：
-#   git tag v1.0.0
-#   git push origin v1.0.0
+#   git tag v1.1.0
+#   git push origin v1.1.0
 #
 # 注意：PyPI 不允许覆盖同名版本。如果这个版本已经发过，
 # publish-pypi 任务会自动跳过而不是报错（见下方的"检查版本是否已发布"）。
@@ -19,9 +19,47 @@ permissions:
   contents: write
 
 jobs:
-  build-windows:
-    name: Windows wheel（含 C 内核）
-    runs-on: windows-latest
+  # ------------------------------------------------------------------
+  # 各平台原生 wheel（含 C 内核，稳定 ABI cp38-abi3）
+  # ------------------------------------------------------------------
+  build-native:
+    name: 原生 wheel（${{ matrix.label }}）
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Windows x86_64
+          - os: windows-latest
+            label: win_amd64
+            target: native
+            plat_tag: ""
+            macos_min: ""
+          # Linux x86_64 —— 用 zig 锁 glibc 2.17，产出 manylinux2014 兼容二进制
+          - os: ubuntu-latest
+            label: manylinux2014_x86_64
+            target: x86_64-linux-gnu.2.17
+            plat_tag: ""
+            macos_min: ""
+          # Linux aarch64 —— 在 x86_64 上用 zig 交叉编译
+          - os: ubuntu-latest
+            label: manylinux2014_aarch64
+            target: aarch64-linux-gnu.2.17
+            plat_tag: manylinux2014_aarch64
+            macos_min: ""
+          # macOS Apple Silicon (arm64)
+          - os: macos-14
+            label: macosx_11_0_arm64
+            target: native
+            plat_tag: ""
+            macos_min: "11.0"
+          # macOS Intel (x86_64)
+          - os: macos-13
+            label: macosx_10_9_x86_64
+            target: native
+            plat_tag: ""
+            macos_min: "10.9"
+
     steps:
       - uses: actions/checkout@v4
 
@@ -29,31 +67,30 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: 安装打包工具
-        run: python -m pip install --upgrade pip setuptools wheel
+      - name: 安装打包工具 + zig 编译器
+        run: python -m pip install --upgrade pip setuptools wheel ziglang
 
       - name: 编译 C 内核
-        run: python build_native.py --fetch-zig
+        run: python build_native.py --target ${{ matrix.target }}
+        env:
+          MACOSX_DEPLOYMENT_TARGET: ${{ matrix.macos_min }}
+          PYTHONPP_PLAT_TAG: ${{ matrix.plat_tag }}
 
       - name: 测试
         run: python test_pythonpp.py
 
-      - name: 构建 wheel（稳定 ABI 标签）
-        # setup.py 的 get_tag() 已经写死 cp38-abi3，这里不用再传参数
+      - name: 构建 wheel（setup.py 的 get_tag() 已写死 cp38-abi3）
         run: python setup.py bdist_wheel
+        env:
+          PYTHONPP_PLAT_TAG: ${{ matrix.plat_tag }}
 
-      - name: 确认标签正确
-        shell: pwsh
-        run: |
-          $whl = Get-ChildItem dist\*.whl | Select-Object -First 1
-          Write-Host "产物：$($whl.Name)"
-          if ($whl.Name -notmatch 'cp38-abi3-win_amd64') {
-            throw "wheel 标签不对：$($whl.Name)，应当是 cp38-abi3-win_amd64"
-          }
+      - name: 确认产物
+        shell: bash
+        run: ls -lh dist
 
       - uses: actions/upload-artifact@v4
         with:
-          name: windows-wheel
+          name: native-wheel-${{ matrix.label }}
           path: dist/*.whl
 
   build-pure:
@@ -97,7 +134,7 @@ jobs:
 
   release:
     name: 创建 GitHub Release
-    needs: [build-windows, build-pure, build-sdist]
+    needs: [build-native, build-pure, build-sdist]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
@@ -117,18 +154,24 @@ jobs:
           body: |
             ## 安装
 
-            ```bash
-            pip install pythonpp_plus-1.0.0-cp38-abi3-win_amd64.whl
-            ```
-
             `cp38-abi3` 表示「Python 3.8 及以上通用」，同一个文件在 3.8 ~ 3.14 都能用。
+
+            | 平台 | 安装命令 |
+            |---|---|
+            | Windows x64 | `pip install pythonpp_plus-1.1.0-cp38-abi3-win_amd64.whl` |
+            | Linux x64 | `pip install pythonpp_plus-1.1.0-cp38-abi3-manylinux2014_x86_64.whl` |
+            | Linux ARM64 | `pip install pythonpp_plus-1.1.0-cp38-abi3-manylinux2014_aarch64.whl` |
+            | macOS Apple Silicon | `pip install pythonpp_plus-1.1.0-cp38-abi3-macosx_11_0_arm64.whl` |
+            | macOS Intel | `pip install pythonpp_plus-1.1.0-cp38-abi3-macosx_10_9_x86_64.whl` |
+
+            没有匹配平台的用户，下载纯 Python 版即可（功能一致，只是没加速）。
 
             装好之后 `import pythonpp` 即可。注意 **PyPI 包名和导入名不一样**：
             PyPI 上叫 `pythonpp-plus`，代码里写 `import pythonpp`。
 
   publish-pypi:
     name: 发布到 PyPI
-    needs: [build-windows, build-pure, build-sdist]
+    needs: [build-native, build-pure, build-sdist]
     runs-on: ubuntu-latest
     # 这个 environment 名字必须和 PyPI 上 Pending publisher 里填的
     # "Environment name" 完全一致，否则 OIDC 认证会失败。

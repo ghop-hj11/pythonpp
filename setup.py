@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+import os
 import platform
 import sys
 from pathlib import Path
@@ -33,7 +34,14 @@ def _native_files():
 
 
 def _platform_tag() -> str:
-    """生成 wheel 的平台标签。"""
+    """生成 wheel 的平台标签。交叉编译时可用 PYTHONPP_PLAT_TAG 覆盖。
+
+    例如在 x86_64 机器上交叉编译 aarch64 的 .so 时，platform.machine()
+    仍是 x86_64，必须显式指定 manylinux2014_aarch64，否则标签会写错。
+    """
+    override = os.environ.get("PYTHONPP_PLAT_TAG", "").strip()
+    if override:
+        return override
     machine = platform.machine().lower()
     system = platform.system().lower()
     if system == "windows":

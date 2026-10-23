@@ -19,7 +19,7 @@ pip install https://github.com/ghop-hj11/pythonpp/releases/download/v1.1.0/pytho
 | Linux 64 位 | `pythonpp_plus-1.1.0-cp38-abi3-manylinux2014_x86_64.whl` |
 | Linux ARM64 | `pythonpp_plus-1.1.0-cp38-abi3-manylinux2014_aarch64.whl` |
 | macOS Apple Silicon (M 系列) | `pythonpp_plus-1.1.0-cp38-abi3-macosx_11_0_arm64.whl` |
-| macOS Intel | `pythonpp_plus-1.1.0-cp38-abi3-macosx_10_9_x86_64.whl` |
+| macOS Intel | `pythonpp_plus-1.1.0-cp38-abi3-macosx_11_0_x86_64.whl` |
 | 其它平台 / 只要功能 | `pythonpp_plus-1.1.0-py3-none-any.whl` |
 
 > **包名和导入名不一样**，这是唯一需要留意的点：

@@ -6,6 +6,7 @@
     python build_native.py                       # 编译到当前目录（本机平台）
     python build_native.py --check               # 只检查现有产物是否可用
     python build_native.py --fetch-zig           # 没有编译器就自动装一个 zig
+    python build_native.py --free-threaded       # 给 3.13t/3.14t 编译（无 GIL）
     python build_native.py --target x86_64-linux-gnu.2.17   # 用 zig 交叉编译 Linux
     python build_native.py --target aarch64-macos          # 用 zig 交叉编译 macOS arm64
 
@@ -21,6 +22,12 @@
     Windows  -> pythonpp/_pythonpp_native.pyd
     Linux    -> pythonpp/_pythonpp_native.abi3.so
     macOS    -> pythonpp/_pythonpp_native.abi3.so
+
+自由线程（--free-threaded，只在 3.13t/3.14t 上可用）：
+    这类解释器的 PyObject 布局不同，稳定 ABI 模块会被直接拒绝加载，
+    所以必须用**当前解释器**的头文件 + 完整 API 编译，并声明
+    Py_MOD_GIL_NOT_USED。产物按 EXT_SUFFIX 命名，例如
+    Windows  -> pythonpp/_pythonpp_native.cp314t-win_amd64.pyd
 """
 
 from __future__ import annotations
@@ -31,6 +38,7 @@ import platform
 import shutil
 import subprocess
 import sys
+import sysconfig
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -100,8 +108,27 @@ def _target_info(target):
     return system, arch
 
 
-def _native_name_for(system):
-    """按目标平台返回正确的原生模块文件名（稳定 ABI 命名）。"""
+def _is_free_threaded():
+    """当前解释器是不是自由线程（--disable-gil）构建。"""
+    try:
+        if hasattr(sys, "_is_gil_enabled"):
+            return bool(sysconfig.get_config_var("Py_GIL_DISABLED"))
+    except Exception:  # pragma: no cover
+        pass
+    return False
+
+
+def _native_name_for(system, free_threaded=False):
+    """返回正确的原生模块文件名。
+
+    标准构建用稳定 ABI 命名（.pyd / .abi3.so），一个文件覆盖 3.8+。
+    自由线程构建的 PyObject 布局不同，必须按解释器版本命名。
+    """
+    if free_threaded:
+        suffix = sysconfig.get_config_var("EXT_SUFFIX") or ""
+        if not suffix:
+            suffix = ".pyd" if system == "windows" else ".so"
+        return "_pythonpp_native" + suffix
     return "_pythonpp_native.pyd" if system == "windows" else "_pythonpp_native.abi3.so"
 
 
@@ -144,11 +171,14 @@ def _zig_cache_env(env):
     return env
 
 
-def _python_dev_paths(system):
+def _python_dev_paths(system, free_threaded=False):
     """拿到头文件（和 Windows 需要的导入库）。
 
     注意：稳定 ABI 的扩展在 Linux/macOS 上**不需要**链 libpython——
     Py* 符号在运行期由解释器解析。只有 Windows 才需要 python3.lib 导入库。
+
+    自由线程构建用的是完整 API，Windows 上必须链版本化的 python314t.lib，
+    不能用 python3.lib（python3.dll 只导出稳定 ABI 的子集）。
     """
     # 交叉编译时允许显式指定目标平台的 Python 头文件目录
     override = os.environ.get("PP_PY_INCLUDE", "").strip()
@@ -178,17 +208,27 @@ def _python_dev_paths(system):
     )
     lib = None
     if system == "windows":
-        for c in candidates_lib:
-            if c and Path(c, "python3.lib").exists():
-                lib = str(Path(c, "python3.lib"))
+        if free_threaded:
+            names = [
+                "python%d%dt.lib" % sys.version_info[:2],
+                "python3t.lib",
+            ]
+        else:
+            names = ["python3.lib"]
+        for name in names:
+            for c in candidates_lib:
+                if c and Path(c, name).exists():
+                    lib = str(Path(c, name))
+                    break
+            if lib:
                 break
     return include, lib
 
 
-def compile_with_zig(zig, target=None, output=None):
+def compile_with_zig(zig, target=None, output=None, free_threaded=False):
     output = Path(output) if output else None
     system, _arch = _target_info(target)
-    include, lib = _python_dev_paths(system)
+    include, lib = _python_dev_paths(system, free_threaded)
     if not include:
         _log("找不到 Python 头文件（Python.h），无法编译")
         return False
@@ -201,8 +241,14 @@ def compile_with_zig(zig, target=None, output=None):
         "-Wall",
         "-Wextra",
         "-Wno-unused-parameter",
-        f"-DPy_LIMITED_API={LIMITED_API}",
     ]
+    if free_threaded:
+        # 完整 API：不能用稳定 ABI，否则自由线程解释器会拒绝加载。
+        # Py_GIL_DISABLED 在 Windows 上不在 pyconfig.h 里，必须由构建方传入，
+        # 否则头文件会按"带 GIL"的对象布局编译，运行期直接段错误。
+        cmd += ["-DPy_GIL_DISABLED=1", "-DPP_FREE_THREADED"]
+    else:
+        cmd += [f"-DPy_LIMITED_API={LIMITED_API}"]
     if target and target != "native":
         cmd += ["-target", target]
     if system == "macos":
@@ -220,22 +266,28 @@ def compile_with_zig(zig, target=None, output=None):
     return result.returncode == 0 and Path(output).exists()
 
 
-def compile_with_cc(cc, output=None):
+def compile_with_cc(cc, output=None, free_threaded=False):
     output = Path(output) if output else None
     system, _arch = _target_info("native")
-    include, lib = _python_dev_paths(system)
+    include, lib = _python_dev_paths(system, free_threaded)
     if not include:
         _log("找不到 Python 头文件（Python.h），无法编译")
         return False
+    if free_threaded:
+        define = "/DPy_GIL_DISABLED=1 /DPP_FREE_THREADED"
+        define_gcc = "-DPy_GIL_DISABLED=1 -DPP_FREE_THREADED"
+    else:
+        define = f"/DPy_LIMITED_API={LIMITED_API}"
+        define_gcc = f"-DPy_LIMITED_API={LIMITED_API}"
     is_cl = Path(cc).name.lower() in {"cl", "cl.exe"}
     cmd = [cc]
     if is_cl:
-        cmd += ["/nologo", "/LD", "/O2", "/W3", f"/DPy_LIMITED_API={LIMITED_API}",
+        cmd += ["/nologo", "/LD", "/O2", "/W3", define,
                 f"/I{include}", str(SOURCE), "/link", f"/OUT:{output}"]
         if lib:
             cmd.append(lib)
     else:
-        cmd += ["-shared", "-O2", "-Wall", f"-DPy_LIMITED_API={LIMITED_API}",
+        cmd += ["-shared", "-O2", "-Wall", define_gcc,
                 "-I", include, "-o", str(output), str(SOURCE)]
         if lib:
             cmd.append(lib)
@@ -243,21 +295,38 @@ def compile_with_cc(cc, output=None):
     return result.returncode == 0 and Path(output).exists()
 
 
-def build(target=None):
+def build(target=None, free_threaded=False):
     if not SOURCE.exists():
         _log(f"缺少 C 源码：{SOURCE}")
         return False
 
+    free_threaded = free_threaded or _is_free_threaded()
+    if free_threaded and not _is_free_threaded():
+        _log("--free-threaded 需要用自由线程解释器（python3.13t / python3.14t）来运行本脚本")
+        return False
+    if free_threaded and target and target != "native":
+        # 自由线程产物必须按解释器 EXT_SUFFIX 命名，跨架构会写出错误的文件名，
+        # 所以只允许"同系统同架构"的交叉编译（例如 x86_64 Linux 上锁 glibc 2.17）。
+        target_system, target_arch = _target_info(target)
+        host_system, host_arch = _target_info("native")
+        if target_system != host_system or target_arch != host_arch:
+            _log("自由线程构建不支持跨架构编译，请在目标机器上原生编译")
+            return False
+
     system, arch = _target_info(target)
-    output = PACKAGE / _native_name_for(system)
+    output = PACKAGE / _native_name_for(system, free_threaded)
     cross = bool(target and target != "native")
+    # 同系统同架构的"交叉编译"（例如 Linux x86_64 上锁 glibc 2.17）本机照样能导入验证
+    importable = not cross or (system, arch) == _target_info("native")
+    if free_threaded:
+        _log("自由线程构建：不使用稳定 ABI，声明 Py_MOD_GIL_NOT_USED")
 
     zig = _find_zig()
     if zig:
         where = f"（目标 {target}，产出 {output.name}）" if cross else ""
         _log(f"使用 zig cc：{zig}{where}")
-        if compile_with_zig(zig, target, output):
-            return _verify(output, importable=not cross)
+        if compile_with_zig(zig, target, output, free_threaded):
+            return _verify(output, importable=importable)
 
     if cross:
         _log("交叉编译需要 zig（pip install ziglang，或 python build_native.py --fetch-zig）")
@@ -267,7 +336,7 @@ def build(target=None):
         cc = shutil.which(name)
         if cc:
             _log(f"使用 {name}：{cc}")
-            if compile_with_cc(cc, output):
+            if compile_with_cc(cc, output, free_threaded):
                 return _verify(output)
 
     _log("没有找到 C 编译器。")
@@ -293,6 +362,8 @@ def _verify(output, importable=True):
 
         info = native.info()
         _log(f"验证通过：{info['name']} {info['version']}（{Path(output).stat().st_size} 字节）")
+        _log(f"  free_threaded={info.get('free_threaded')} atomics={info.get('atomics')} "
+             f"channels={info.get('channels')} release_gil={info.get('gil_release')}")
         _log("别忘了跑一遍测试：python test_pythonpp.py")
         return True
     except Exception as exc:  # pragma: no cover
@@ -330,6 +401,10 @@ def main(argv=None):
     parser.add_argument("--fetch-zig", action="store_true", help="下载 zig 编译器")
     parser.add_argument("--clean", action="store_true", help="删除编译产物")
     parser.add_argument(
+        "--free-threaded", action="store_true",
+        help="给自由线程解释器（3.13t/3.14t）编译无 GIL 版本（需用该解释器运行脚本）",
+    )
+    parser.add_argument(
         "--target", default=None,
         help="交叉编译目标，例如 x86_64-linux-gnu.2.17、aarch64-macos（默认 native）",
     )
@@ -343,12 +418,13 @@ def main(argv=None):
         _log("已清理")
         return 0
     if args.fetch_zig:
-        return 0 if fetch_zig() and build(args.target) else 1
+        return 0 if fetch_zig() and build(args.target, args.free_threaded) else 1
     if args.check:
         system, _arch = _target_info(args.target)
-        return 0 if _verify(PACKAGE / _native_name_for(system),
+        free_threaded = args.free_threaded or _is_free_threaded()
+        return 0 if _verify(PACKAGE / _native_name_for(system, free_threaded),
                             importable=(not args.target or args.target == "native")) else 1
-    return 0 if build(args.target) else 1
+    return 0 if build(args.target, args.free_threaded) else 1
 
 
 if __name__ == "__main__":

@@ -1,10 +1,17 @@
 name: release
 
-# 推送 v* 标签就自动：在各平台编译 C 内核 → 跑测试 → 打 wheel → 创建 GitHub Release → 发布到 PyPI
+# 推送 v* 标签就自动：在各平台编译 C 内核 → 跑测试 → 打 wheel →
+# 创建 GitHub Release → 发布到 PyPI
 #
 # 用法：
-#   git tag v1.1.0
-#   git push origin v1.1.0
+#   git tag v1.2.0
+#   git push origin v1.2.0
+#
+# 产物分三类：
+#   1. 稳定 ABI wheel（cp38-abi3）：3.8 ~ 3.14 全适用，GIL=False 时走
+#      "原子操作 + 原生通道 + 释放 GIL 的 JIT 循环"；
+#   2. 自由线程 wheel（cp314t）：3.14t 解释器上真正去掉 GIL，多核并行跑 Python；
+#   3. 纯 Python wheel：任何平台都能装，功能一致，只是没加速。
 #
 # 注意：PyPI 不允许覆盖同名版本。如果这个版本已经发过，
 # publish-pypi 任务会自动跳过而不是报错（见下方的"检查版本是否已发布"）。
@@ -93,6 +100,100 @@ jobs:
           name: native-wheel-${{ matrix.label }}
           path: dist/*.whl
 
+  # ------------------------------------------------------------------
+  # 自由线程 wheel（cp314t）：3.13t / 3.14t 解释器上真正无 GIL
+  # ------------------------------------------------------------------
+  build-free-threaded:
+    name: 自由线程 wheel（${{ matrix.label }}）
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            label: win_amd64
+            target: native
+            plat_tag: ""
+            macos_min: ""
+          # 同架构交叉编译：用 zig 锁 glibc 2.17，产物在 3.14t 上按 EXT_SUFFIX 命名
+          - os: ubuntu-latest
+            label: manylinux2014_x86_64
+            target: x86_64-linux-gnu.2.17
+            plat_tag: ""
+            macos_min: ""
+          - os: macos-14
+            label: macosx_11_0_arm64
+            target: native
+            plat_tag: ""
+            macos_min: "11.0"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # setup-python 的 "3.14t" = 官方 free-threaded 构建（sys._is_gil_enabled() == False）
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14t"
+
+      - name: 安装打包工具 + zig 编译器
+        run: python -m pip install --upgrade pip setuptools wheel ziglang
+
+      - name: 编译无 GIL 内核
+        run: python build_native.py --free-threaded --target ${{ matrix.target }}
+        env:
+          MACOSX_DEPLOYMENT_TARGET: ${{ matrix.macos_min }}
+
+      - name: 测试（自由线程解释器）
+        run: python test_pythonpp.py
+
+      - name: 确认解释器真的没有 GIL
+        run: python -c "import sys, pythonpp; print('free_threaded =', sys._is_gil_enabled() == False); print(pythonpp.gil_status())"
+
+      - name: 构建自由线程 wheel（标签 cp314-cp314t-<平台>）
+        run: python setup.py bdist_wheel
+        env:
+          PYTHONPP_PLAT_TAG: ${{ matrix.plat_tag }}
+
+      - name: 确认产物
+        shell: bash
+        run: ls -lh dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: free-threaded-wheel-${{ matrix.label }}
+          path: dist/*.whl
+
+  # ------------------------------------------------------------------
+  # 跨版本 / 跨平台兼容性测试：同一个稳定 ABI 源码，在各版本解释器上编译+跑测试
+  # ------------------------------------------------------------------
+  test-compat:
+    name: 兼容性（${{ matrix.os }} / Python ${{ matrix.python }}）
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-14]
+        python: ["3.9", "3.12", "3.14"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - run: python -m pip install --upgrade pip setuptools wheel ziglang
+
+      - name: 编译稳定 ABI 内核
+        run: python build_native.py
+
+      - name: 测试（原生内核）
+        run: python test_pythonpp.py
+
+      - name: 纯 Python 回退也要能跑
+        run: python test_pythonpp.py
+        env:
+          PYTHONPP_NO_NATIVE: "1"
+
   build-pure:
     name: 纯 Python wheel（其它平台用）
     runs-on: ubuntu-latest
@@ -111,6 +212,11 @@ jobs:
 
       - name: 构建
         run: python setup.py bdist_wheel
+
+      - name: 回退版测试
+        run: python test_pythonpp.py
+        env:
+          PYTHONPP_NO_NATIVE: "1"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -134,7 +240,7 @@ jobs:
 
   release:
     name: 创建 GitHub Release
-    needs: [build-native, build-pure, build-sdist]
+    needs: [build-native, build-free-threaded, build-pure, build-sdist]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
@@ -152,26 +258,54 @@ jobs:
           files: dist/*
           generate_release_notes: true
           body: |
-            ## 安装
+            ## pythonpp-plus 1.2.0 —— GIL=False
 
-            `cp38-abi3` 表示「Python 3.8 及以上通用」，同一个文件在 3.8 ~ 3.14 都能用。
+            `GIL=False` 在三种情况下分别意味着：
+
+            | 解释器 | 效果 |
+            |---|---|
+            | 标准 CPython 3.8+ | 运行时自身无锁：原子操作、原生通道、阻塞时释放 GIL、JIT 循环执行期释放 GIL |
+            | 自由线程 CPython 3.14t | 真正的多核并行：C 内核声明 `Py_MOD_GIL_NOT_USED`，多线程跑 Python 不再是假并行 |
+            | 纯 Python 回退 | 用 `threading.Lock` 语义等价实现，功能一致，只是没有硬件原子指令 |
+
+            ### 安装
+
+            `cp38-abi3` 表示「Python 3.8 及以上通用」，同一个文件在 3.8 ~ 3.14 都能用：
 
             | 平台 | 安装命令 |
             |---|---|
-            | Windows x64 | `pip install pythonpp_plus-1.1.0-cp38-abi3-win_amd64.whl` |
-            | Linux x64 | `pip install pythonpp_plus-1.1.0-cp38-abi3-manylinux2014_x86_64.whl` |
-            | Linux ARM64 | `pip install pythonpp_plus-1.1.0-cp38-abi3-manylinux2014_aarch64.whl` |
-            | macOS Apple Silicon | `pip install pythonpp_plus-1.1.0-cp38-abi3-macosx_11_0_arm64.whl` |
-            | macOS Intel | `pip install pythonpp_plus-1.1.0-cp38-abi3-macosx_11_0_x86_64.whl` |
+            | Windows x64 | `pip install pythonpp_plus-1.2.0-cp38-abi3-win_amd64.whl` |
+            | Linux x64 | `pip install pythonpp_plus-1.2.0-cp38-abi3-manylinux2014_x86_64.whl` |
+            | Linux ARM64 | `pip install pythonpp_plus-1.2.0-cp38-abi3-manylinux2014_aarch64.whl` |
+            | macOS Apple Silicon | `pip install pythonpp_plus-1.2.0-cp38-abi3-macosx_11_0_arm64.whl` |
+            | macOS Intel | `pip install pythonpp_plus-1.2.0-cp38-abi3-macosx_11_0_x86_64.whl` |
+
+            自由线程构建（Python 3.14t）请用 `cp314t` 的文件，例如：
+
+            ```
+            pip install pythonpp_plus-1.2.0-cp314-cp314t-win_amd64.whl
+            ```
 
             没有匹配平台的用户，下载纯 Python 版即可（功能一致，只是没加速）。
 
             装好之后 `import pythonpp` 即可。注意 **PyPI 包名和导入名不一样**：
             PyPI 上叫 `pythonpp-plus`，代码里写 `import pythonpp`。
 
+            ### GIL=False 用法
+
+            ```python
+            import pythonpp as pp
+
+            pp.configure(gil=False)          # 等价于 GIL=False；默认 True
+            print(pp.gil_status())           # 看当前到底并行到什么程度
+
+            counter = pp.AtomicInt(0)        # 硬件原子操作，无锁自增
+            ch = pp.Channel(16)              # Go 风格通道：不共享内存，只传消息
+            ```
+
   publish-pypi:
     name: 发布到 PyPI
-    needs: [build-native, build-pure, build-sdist]
+    needs: [build-native, build-free-threaded, build-pure, build-sdist]
     runs-on: ubuntu-latest
     # 这个 environment 名字必须和 PyPI 上 Pending publisher 里填的
     # "Environment name" 完全一致，否则 OIDC 认证会失败。

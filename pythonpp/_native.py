@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """原生内核加载器。
 
 策略：
@@ -27,10 +27,17 @@ loaded_from = None      # 实际加载的原生库路径（加载成功时）
 
 
 def _native_candidates():
-    """可能存在的原生内核文件名（跨平台）。"""
+    """可能存在的原生内核文件名（跨平台）。
+
+    除了稳定 ABI 的固定名字，还要用 glob 兜住按解释器版本命名的产物，
+    例如自由线程构建的 ``_pythonpp_native.cp314t-win_amd64.pyd``。
+    """
     here = Path(__file__).resolve().parent
     names = ["_pythonpp_native.pyd", "_pythonpp_native.abi3.so", "_pythonpp_native.so"]
-    return [here / n for n in names]
+    paths = [here / n for n in names]
+    for pattern in ("_pythonpp_native*.pyd", "_pythonpp_native*.so"):
+        paths.extend(p for p in sorted(here.glob(pattern)) if p not in paths)
+    return paths
 
 
 def _try_import_native():
@@ -73,7 +80,7 @@ def _looks_native(module):
 class _PythonFallback:
     """纯 Python 实现：接口与 C 内核一一对应，保证行为一致。"""
 
-    __version__ = "1.1.0"
+    __version__ = "1.2.0"
 
     def __init__(self):
         self._state = 0x9E3779B9
@@ -191,6 +198,10 @@ class _PythonFallback:
             "platform": sys.platform,
             "arch": _arch(),
             "fallback": True,
+            "free_threaded": False,
+            "atomics": 0,
+            "channels": 0,
+            "gil_release": 0,
         }
 
 
@@ -225,6 +236,10 @@ def diagnostics():
         "limited_api": info.get("limited_api"),
         "native_platform": info.get("platform"),
         "native_arch": info.get("arch"),
+        "free_threaded": bool(info.get("free_threaded")),
+        "atomics": bool(info.get("atomics")),
+        "channels": bool(info.get("channels")),
+        "release_gil": bool(info.get("gil_release")),
     }
 
 
@@ -233,5 +248,7 @@ def describe():
     if is_native:
         info = native.info()
         ver = info["version"] if isinstance(info, dict) else "?"
+        if isinstance(info, dict) and info.get("free_threaded"):
+            return f"C 内核 {ver}（自由线程，无 GIL，Python {sys.version.split()[0]}）"
         return f"C 内核 {ver}（稳定 ABI，Python {sys.version.split()[0]}）"
     return f"纯 Python 回退（Python {sys.version.split()[0]}），装个编译器还能再快一截"

@@ -77,6 +77,22 @@ from ._errors import (
     explain_error,
 )
 from ._jit import JITFunction, jit, native_available
+from ._gil import (
+    ACQ_REL,
+    ACQUIRE,
+    RELAXED,
+    RELEASE,
+    SEQ_CST,
+    AtomicInt,
+    Channel,
+    ChannelClosed,
+    configure,
+    fence,
+    gil_enabled,
+    gil_status,
+    parallel_map,
+    spawn,
+)
 from ._strutil import (
     chunk,
     dedent,
@@ -148,6 +164,21 @@ __all__ = [
     "jit",
     "JITFunction",
     "native_available",
+    # GIL=False / 并发
+    "configure",
+    "gil_enabled",
+    "gil_status",
+    "AtomicInt",
+    "Channel",
+    "ChannelClosed",
+    "spawn",
+    "parallel_map",
+    "fence",
+    "RELAXED",
+    "ACQUIRE",
+    "RELEASE",
+    "ACQ_REL",
+    "SEQ_CST",
     # 错误
     "PPError",
     "PPCompileError",

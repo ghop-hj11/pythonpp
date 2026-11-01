@@ -19,6 +19,7 @@ import os
 import random as _stdlib_random
 import sys
 import tempfile
+import threading
 import traceback
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -456,6 +457,178 @@ def test_jit():
     check("stats 有字段", "调用次数" in wrapped.stats())
 
 
+def test_gil():
+    section("GIL=False / 并发原语")
+    status = pythonpp.gil_status()
+    check("gil_status 有解释器信息", "interpreter_gil" in status and "parallelism" in status,
+          str(status))
+    # 原子/通道能力只看 C 内核有没有加载，跟 JIT 的 C 后端无关
+    check("gil_status 报告原子/通道能力",
+          status["atomics"] == pythonpp._native.is_native
+          and status["channels"] == pythonpp._native.is_native,
+          str(status))
+
+    # ---- 开关 ----
+    old = pythonpp.configure(gil=False)
+    check("configure 返回旧值", old is True, repr(old))
+    check("configure 生效", pythonpp.gil_enabled() is False)
+    check("configure 传到内核",
+          pythonpp.gil_status()["release_gil"] == pythonpp._native.is_native,
+          str(pythonpp.gil_status()))
+    pythonpp.configure(gil=True)
+    check("configure 可恢复", pythonpp.gil_enabled() is True)
+
+    # ---- 原子整数 ----
+    counter = pythonpp.AtomicInt(0)
+    check("AtomicInt 初值", counter.value == 0)
+    counter.store(5, "release")
+    check("AtomicInt store/load 带内存序", counter.load("acquire") == 5)
+    check("AtomicInt add 返回新值", counter.add(3) == 8)
+    check("AtomicInt sub", counter.sub(2) == 6)
+    check("AtomicInt exchange 返回旧值", counter.exchange(9) == 6)
+    ok, current = counter.compare_set(9, 10)
+    check("AtomicInt CAS 成功", ok and current == 10, f"{ok},{current}")
+    ok, current = counter.compare_set(9, 11)
+    check("AtomicInt CAS 失败返回当前值", (not ok) and current == 10, f"{ok},{current}")
+    counter.store(0)
+    check("AtomicInt or", counter.or_(0b1010) == 0 and counter.value == 0b1010)
+    check("AtomicInt and", counter.and_(0b1000) == 0b1010 and counter.value == 0b1000)
+    check("AtomicInt xor", counter.xor(0b1111) == 0b1000 and counter.value == 0b0111)
+
+    expect_error("非法内存序报 ValueError", lambda: counter.load("nonsense"), ValueError)
+
+    # ---- 数据竞争：8 线程各加 5 万，必须一个不漏 ----
+    total = pythonpp.AtomicInt(0)
+
+    def bump():
+        local = total
+        for _ in range(50000):
+            local.add(1)
+
+    threads = [threading.Thread(target=bump) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    check("原子加法不丢更新（8 线程 × 5 万）", total.value == 400000, str(total.value))
+
+    # ---- 内存序：release 写 + acquire 读 ----
+    data = []
+    flag = pythonpp.AtomicInt(0)
+
+    def writer():
+        data.append("payload")
+        pythonpp.fence("release")
+        flag.store(1, pythonpp.RELAXED)
+        # 用 release 语义再写一次，保证读端 acquire 能看到 data
+        flag.store(2, pythonpp.RELEASE)
+
+    t = threading.Thread(target=writer)
+    t.start()
+    t.join()
+    check("release/acquire 之后数据可见", flag.load(pythonpp.ACQUIRE) >= 1 and data == ["payload"])
+
+    # ---- 通道 ----
+    ch = pythonpp.Channel(0)
+    ch.put("hello")
+    check("通道先入先出", ch.get() == "hello")
+    for i in range(5):
+        ch.put(i)
+    check("通道 qsize", ch.qsize() == 5)
+    check("通道按顺序取出", [ch.get() for _ in range(5)] == [0, 1, 2, 3, 4])
+    ch.close()
+    check("通道关闭标志", ch.closed)
+    expect_error("关闭后再取报 ChannelClosed", lambda: ch.get(), pythonpp.ChannelClosed)
+    expect_error("关闭后发送报 RuntimeError", lambda: ch.put("x"), RuntimeError)
+
+    # 关闭后仍可把剩余消息取完
+    ch2 = pythonpp.Channel(0)
+    ch2.put("a")
+    ch2.put("b")
+    ch2.close()
+    check("关闭后取完剩余消息", [ch2.get(), ch2.get()] == ["a", "b"])
+
+    # 超时
+    empty = pythonpp.Channel(0)
+    expect_error("空通道接收超时", lambda: empty.get(0.05), TimeoutError)
+    full = pythonpp.Channel(1)
+    full.put(1)
+    expect_error("满通道发送超时", lambda: full.put(2, 0.05), TimeoutError)
+
+    # ---- 生产者/消费者（跨线程消息传递）----
+    pipe = pythonpp.Channel(4)
+
+    def produce():
+        for i in range(100):
+            pipe.put(i)
+        pipe.close()
+
+    received = []
+
+    def consume():
+        for item in pipe:
+            received.append(item)
+
+    p = threading.Thread(target=produce)
+    c = threading.Thread(target=consume)
+    p.start()
+    c.start()
+    p.join()
+    c.join()
+    check("生产者/消费者无丢失", received == list(range(100)), f"len={len(received)}")
+
+    # ---- spawn / parallel_map ----
+    future = pythonpp.spawn(lambda: sum(range(100000)))
+    check("spawn 返回 Future", hasattr(future, "result"))
+    check("spawn 结果正确", future.result() == sum(range(100000)))
+    squares = pythonpp.parallel_map(lambda i: i * i, range(12))
+    check("parallel_map 顺序正确", squares == [i * i for i in range(12)], str(squares))
+
+    # ---- 多线程 MemPool ----
+    pool = MemPool(max_bytes=64 * 1024 * 1024)
+
+    def fill_pool(tag):
+        for i in range(50):
+            pool.add(f"{tag}_{i}", [i] * 8)
+            pool.peek(f"{tag}_{i}")
+
+    threads = [threading.Thread(target=fill_pool, args=(f"t{k}",)) for k in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    check("多线程写 MemPool 不丢变量", len(pool) == 400, f"len={len(pool)}")
+    check("多线程写 MemPool 计数一致",
+          all(pool.stats()["变量个数"] == 400 for _ in range(1)))
+    pool.clear()
+
+    # ---- 并发 JIT：释放 GIL 后结果依然正确 ----
+    pythonpp.configure(gil=False)
+    def loop_sum(n):
+        total = 0
+        for i in range(n):
+            total += i
+        return total
+
+    wrapped = pythonpp.jit(loop_sum, warmup=False)
+    wrapped(1000)                      # 先编译
+    expected = loop_sum(500000)
+    results = []
+
+    def run_jit():
+        results.append(wrapped(500000))
+
+    threads = [threading.Thread(target=run_jit) for _ in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    check("并发 JIT 结果全部正确",
+          len(results) == 4 and all(v == expected for v in results),
+          f"{results} != {expected}")
+    pythonpp.configure(gil=True)
+
+
 def _best_of(func, n, repeat=3):
     import time
 
@@ -498,6 +671,7 @@ def main():
         test_builtins,
         test_errors,
         test_jit,
+        test_gil,
     ]
     for func in tests:
         try:

@@ -1,26 +1,31 @@
-# Python++ 1.1
+# Python++ 1.2
 
 > Python 你会多少，Python++ 就会多少。它不改变语法，只是在旁边放了一箱更好用的工具，
 > 并且能在你需要的时候，把慢代码真正编译成机器码。
 
 ## 安装
 
-**推荐用 GitHub Release 直链安装**（v1.1.0 起提供 5 个平台的 C 加速 wheel）：
+**推荐用 GitHub Release 直链安装**（v1.2.0 起提供 5 个平台的 C 加速 wheel，
+外加 3 个平台的自由线程无 GIL wheel）：
 
 ```bash
-pip install https://github.com/ghop-hj11/pythonpp/releases/download/v1.1.0/pythonpp_plus-1.1.0-cp38-abi3-win_amd64.whl
+pip install https://github.com/ghop-hj11/pythonpp/releases/download/v1.2.0/pythonpp_plus-1.2.0-cp38-abi3-win_amd64.whl
 ```
 
 也可以打开 [Releases 页面](https://github.com/ghop-hj11/pythonpp/releases) 挑对应文件下载后安装：
 
 | 你的情况 | 下哪个文件 |
 |---|---|
-| Windows 64 位 | `pythonpp_plus-1.1.0-cp38-abi3-win_amd64.whl` |
-| Linux 64 位 | `pythonpp_plus-1.1.0-cp38-abi3-manylinux2014_x86_64.whl` |
-| Linux ARM64 | `pythonpp_plus-1.1.0-cp38-abi3-manylinux2014_aarch64.whl` |
-| macOS Apple Silicon (M 系列) | `pythonpp_plus-1.1.0-cp38-abi3-macosx_11_0_arm64.whl` |
-| macOS Intel | `pythonpp_plus-1.1.0-cp38-abi3-macosx_11_0_x86_64.whl` |
-| 其它平台 / 只要功能 | `pythonpp_plus-1.1.0-py3-none-any.whl` |
+| Windows 64 位 | `pythonpp_plus-1.2.0-cp38-abi3-win_amd64.whl` |
+| Linux 64 位 | `pythonpp_plus-1.2.0-cp38-abi3-manylinux2014_x86_64.whl` |
+| Linux ARM64 | `pythonpp_plus-1.2.0-cp38-abi3-manylinux2014_aarch64.whl` |
+| macOS Apple Silicon (M 系列) | `pythonpp_plus-1.2.0-cp38-abi3-macosx_11_0_arm64.whl` |
+| macOS Intel | `pythonpp_plus-1.2.0-cp38-abi3-macosx_11_0_x86_64.whl` |
+| **Python 3.14t（自由线程，无 GIL）** | `pythonpp_plus-1.2.0-cp314-cp314t-<平台>.whl` |
+| 其它平台 / 只要功能 | `pythonpp_plus-1.2.0-py3-none-any.whl` |
+
+> `cp314t` 的文件只能装在 3.14t（free-threaded）解释器里，
+> 那边 `GIL=False` 才是**真正的多核并行**；普通 GIL 版解释器请用 `cp38-abi3` 的文件。
 
 > **包名和导入名不一样**，这是唯一需要留意的点：
 >
@@ -39,7 +44,7 @@ import pythonpp
 print(pythonpp._native.describe())
 ```
 
-看到 `C 内核 1.1.0（稳定 ABI，...）` 就说明原生加速已经生效；
+看到 `C 内核 1.2.0（稳定 ABI，...）` 就说明原生加速已经生效；
 如果显示 `纯 Python 回退`，说明当前平台没有对应的预编译包（功能完全正常，只是慢一点），
 装上 `pip install ziglang` 后重新安装即可启用。
 
@@ -425,6 +430,142 @@ except ZeroDivisionError as e:
 `FileNotFoundError`、`RecursionError`、`MemoryError`、`OverflowError`、
 `IndentationError`、`SyntaxError` 等。
 
+## 6. GIL=False：把全局解释器锁管住
+
+一行开关，默认开启：
+
+```python
+import pythonpp as pp
+
+pp.configure(gil=False)     # 等价于 GIL=False
+pp.configure(gil=True)      # 恢复默认
+print(pp.gil_status())      # 看清到底"并行"到什么程度
+```
+
+`gil_status()` 会如实告诉你四件事：
+
+```python
+{
+  'configured_gil': False,          # 你配置的值
+  'gil_disabled_by_config': True,   # 配置层已关闭
+  'interpreter_gil': False,         # 解释器本身还有没有 GIL（3.14t 上才是 False）
+  'interpreter_free_threaded': True,
+  'atomics': True, 'channels': True,
+  'release_gil': True,              # C 内核是否在长耗时处释放 GIL
+  'parallelism': 'full'             # full / native-only / none
+}
+```
+
+**先把边界说清楚**（这决定了你能期待什么）：
+
+| 解释器 | `GIL=False` 的实际效果 |
+|---|---|
+| 标准 CPython 3.8 ~ 3.14 | GIL 无法在运行期删除。Python++ 做的是"自身运行时无锁 + 关键路径主动释放 GIL"，多线程能重叠 I/O、原生通道阻塞、JIT 机器码计算 |
+| 自由线程 CPython 3.13t / 3.14t | C 内核声明 `Py_MOD_GIL_NOT_USED`，多线程跑 Python 是**真正的多核并行** |
+| 没有 C 内核（纯 Python 回退） | 用 `threading.Lock` 提供同语义实现，功能一致，但没有硬件原子指令 |
+
+### 机制一：原子操作 + 内存屏障
+
+CPU 的 `lock xadd` / `ldaxr-stlxr` 这类指令本身就是不可分割的，
+不需要操作系统层面的锁，也就不会出现"两个线程同时改一个变量、差一微秒就错乱"。
+
+```python
+counter = pp.AtomicInt(0)
+
+counter.add(1)                  # 8 个线程 × 5 万次 = 400000，一次都不会丢
+counter.load()
+counter.exchange(5)
+ok, now = counter.compare_set(5, 6)   # CAS：成功返回 (True, 新值)，失败返回 (False, 当前值)
+counter.or_(0x10); counter.and_(0xFF); counter.xor_(1)
+```
+
+- 底层是 `__atomic_*`（GCC/Clang）与 `_Interlocked*`（MSVC），不是 Python 锁。
+- 内存序可选：`RELAXED < ACQUIRE / RELEASE < ACQ_REL < SEQ_CST`，
+  默认 `SEQ_CST`，怕写错就用默认值。
+
+```python
+pp.fence(pp.SEQ_CST)            # 显式内存屏障：挡住 CPU/编译器的指令重排
+```
+
+**为什么需要它**：CPU 和编译器为了提速会偷偷调整指令顺序。
+下面的"先写数据、再置标志位"如果没有 `RELEASE`，别的线程可能先看到标志位、后看到数据：
+
+```python
+data = {}
+flag = pp.AtomicInt(0)
+
+# 生产者线程
+data["k"] = 1
+flag.store(1, pp.RELEASE)       # 保证：flag=1 之前，data 一定已经写进去了
+
+# 消费者线程
+if flag.load(pp.ACQUIRE) == 1:  # 保证：读到 1 之后，一定能看到完整的 data
+    print(data["k"])
+```
+
+### 机制二：消息传递（Go 风格 Channel）
+
+线程之间**不共享内存**，只把对象"递过去"，从根上避免资源抢夺：
+
+```python
+ch = pp.Channel(16)             # 有界缓冲 16 条；Channel(0) 表示无界
+
+ch.put(obj)                     # 通道满时阻塞
+ch.put(obj, timeout=0.5)        # 带超时，超时抛 TimeoutError
+item = ch.get()                 # 通道空时阻塞
+item = ch.get(0.05)             # 带超时
+ch.close()                      # 关闭后仍可取完剩余消息，取空再取抛 ChannelClosed
+
+for item in ch:                 # 迭代到关闭为止
+    ...
+```
+
+阻塞等待时 C 内核会 `PyEval_SaveThread()` 释放 GIL，
+所以在标准 CPython 上"一个线程等通道"也不会把整个解释器卡死。
+
+```python
+def worker(tasks, results):
+    for t in tasks:
+        results.put(t * t)
+
+tasks, results = pp.Channel(0), pp.Channel(0)
+...
+pp.spawn(worker, [1, 2, 3], results)      # 起一个后台线程
+pp.parallel_map(lambda x: x * x, range(100), workers=4)
+```
+
+### 机制三：JIT 执行期释放 GIL
+
+`@jit` 编译出的机器码是做纯整数运算的，全程不碰 Python 对象。
+所以 `GIL=False` 时，Python++ 会在这段机器码执行期间释放 GIL：
+
+```python
+pp.configure(gil=False)
+
+@pp.jit
+def loop_sum(n):
+    total = 0
+    for i in range(n):
+        total += i
+    return total
+
+# 4 个线程同时在跑机器码：在 3.14t 上是真并行，在标准 CPython 上也不再互相卡 GIL
+```
+
+### 数据竞争 / 顺序问题：Python++ 给了你工具，责任还在你
+
+开了 `GIL=False` 之后，**普通的 `x += 1` 不再自动安全**——这正是它快的原因。
+
+| 场景 | 该用什么 |
+|---|---|
+| 多个线程累加同一个计数器 | `pp.AtomicInt` |
+| 多个线程改同一个容器 | `pp.Channel` 传消息，或自己加 `threading.Lock` |
+| 一个线程写、另一个线程读一份数据 | `store(..., pp.RELEASE)` + `load(..., pp.ACQUIRE)` |
+| 需要严格顺序、又不想用锁 | `pp.fence(pp.SEQ_CST)` 把重排挡住 |
+
+`Lang` 与 `MemPool` 的内部状态在 1.2 里已经全部走原子路径/加锁路径，
+多个线程同时跑 `Lang.run()` / `MemPool.add()` 是安全的（测试里 8 线程 × 5 万次验证过）。
+
 ---
 
 # 第三部分：它是怎么变快的
@@ -559,7 +700,12 @@ python build_native.py --check               # 只检查现有产物
 python build_native.py --clean               # 清理产物
 python build_native.py --target x86_64-linux-gnu.2.17   # 用 zig 交叉编译 Linux
 python build_native.py --target aarch64-macos           # 用 zig 交叉编译 macOS arm64
+python build_native.py --free-threaded       # 给 3.13t / 3.14t 编译无 GIL 版本
 ```
+
+自由线程版必须用**自由线程解释器**来跑这个脚本（通常会自动识别，加不加 `--free-threaded` 都一样），
+并且构建时会强制传入 `-DPy_GIL_DISABLED=1` —— Windows 的 `pyconfig.h` 里没有这个宏，
+不显式传就会按"带 GIL"的对象布局编译，运行期直接段错误。
 
 不需要 Visual Studio，也不需要 CMake。**没有编译器也能跑**，只是慢一点。
 
@@ -570,6 +716,14 @@ python build_native.py --target aarch64-macos           # 用 zig 交叉编译 m
 | Windows | `pythonpp/_pythonpp_native.pyd` | 链 `python3.lib` 导入库 |
 | Linux | `pythonpp/_pythonpp_native.abi3.so` | 不链 libpython，符号运行期解析 |
 | macOS | `pythonpp/_pythonpp_native.abi3.so` | `-undefined dynamic_lookup`，同上 |
+
+自由线程（`3.14t`）的产物按解释器后缀命名，两种 ABI 互不干扰：
+
+| 平台 | 产物 |
+|---|---|
+| Windows | `pythonpp/_pythonpp_native.cp314t-win_amd64.pyd`（链 `python314t.lib`） |
+| Linux | `pythonpp/_pythonpp_native.cpython-314t-x86_64-linux-gnu.so` |
+| macOS | `pythonpp/_pythonpp_native.cpython-314t-darwin.so` |
 
 `@jit` 找编译器的顺序：`PYTHONPP_CC` 环境变量 → `PP_ZIG` → PATH 里的
 `zig` → 包目录下的 `.zig/` → `pip install ziglang` 装的 zig → `gcc` → `clang`。
@@ -582,9 +736,12 @@ python test_pythonpp.py
 ```
 
 覆盖：随机数分布（卡方检验）、文件操作、MemPool 淘汰与缓存、Lang 执行、
-错误翻译、JIT 正确性（**每个 JIT 函数都和纯 Python 逐项对比结果**）。
+错误翻译、JIT 正确性（**每个 JIT 函数都和纯 Python 逐项对比结果**），
+以及 1.2 新增的并发正确性：8 线程 × 5 万次原子加不丢更新、ACQUIRE/RELEASE 可见性、
+通道 FIFO / 超时 / 关闭语义、生产者消费者、多线程 MemPool、`GIL=False` 下并发 JIT 结果一致。
 
-**109 项全部通过**，Python 3.12 与 3.14 上验证过。
+**144 项全部通过**：标准 CPython 3.14、自由线程 3.14t、纯 Python 回退（`PYTHONPP_NO_NATIVE=1`）
+三种条件各跑一遍。
 
 如果环境里没有可用的编译器，JIT 相关检查会自动跳过并说明原因，
 不会误报失败。
@@ -612,11 +769,12 @@ pythonpp/
 ├── _strutil.py        字符串工具
 ├── _misc.py           杂项
 ├── _errors.py         中文报错
+├── _gil.py            GIL 开关 / AtomicInt / Channel / spawn / parallel_map
 ├── _console.py        控制台 UTF-8 兜底
 ├── _bench.py          基准测试
 ├── _cli.py            命令行
-├── pythonpp_native.c  C 内核源码（单文件）
-└── _pythonpp_native.pyd / .abi3.so   编译产物（按平台）
+├── pythonpp_native.c  C 内核源码（单文件，含原子操作与通道）
+└── _pythonpp_native.pyd / .abi3.so / .cp314t-*.pyd   编译产物（按平台）
 pyproject.toml         项目元数据
 setup.py               打包（塞二进制 + 平台标签）
 build_native.py        构建脚本
@@ -635,25 +793,36 @@ test_pythonpp.py       测试
 | `PP_ZIG` | 指定 zig 路径 |
 | `PYTHONPP_JIT_MIN_WORK` | 触发编译的最小工作量（默认 20000） |
 
-## 3. 内核诊断（1.1 新增）
+## 3. 内核诊断（1.1 新增，1.2 扩充）
 
-排查「到底加载了哪个内核 / 是不是稳定 ABI」这类问题，不用再猜：
+排查「到底加载了哪个内核 / 是不是稳定 ABI / 有没有真并行」这类问题，不用再猜：
 
 ```python
 from pythonpp import _native
 print(_native.diagnostics())
 # {'backend': 'native', 'is_native': True, 'loaded_from': '...\\_pythonpp_native.pyd',
-#  'platform': 'win32', 'arch': 'x86_64', 'version': '1.1.0',
-#  'limited_api': 0x30008, 'native_platform': 'windows', 'native_arch': 'x86_64'}
+#  'platform': 'win32', 'arch': 'x86_64', 'version': '1.2.0',
+#  'limited_api': 0x30008, 'native_platform': 'windows', 'native_arch': 'x86_64',
+#  'free_threaded': False, 'atomics': True, 'channels': True, 'release_gil': True}
 ```
 
 命令行更直观：
 
 ```bash
 python -m pythonpp --info
-# 原生内核：native v1.1.0（windows/x86_64）
-# 内核文件：...\_pythonpp_native.pyd
+# 原生内核：native v1.2.0（windows/x86_64）
+# 内核文件：...\_pythonpp_native.cp314t-win_amd64.pyd
 # ABI 一致性：内核架构 x86_64 == 解释器架构 x86_64 ✓
+# 配置的 GIL  ：关（GIL=False）
+# 解释器 GIL  ：关（自由线程构建）
+# 原子/通道   ：atomics=True channels=True
+# 并行能力    ：full  —— 真正多核并行（自由线程解释器 + 无 GIL 内核）
+```
+
+命令行也支持直接关 GIL：
+
+```bash
+python -m pythonpp --nogil script.py
 ```
 
 `--info` 会对比「内核编译目标架构」和「当前解释器架构」，不一致会直接标 ⚠，
@@ -683,6 +852,17 @@ python -m pythonpp --info
 不一定。没有编译器时，C 内核和 `@jit` 都会自动退到较慢但正确的实现。
 想获得全部速度，`pip install ziglang` 是最省事的办法。
 
+**Q：`GIL=False` 之后我的老代码会不会出问题？**
+不会自动出问题，但也不再有"免费的线程安全"。默认是 `gil=True`，
+你不主动关就完全保持原状；关了之后，多个线程共享可变对象时要按
+「第 6 节」的表格选原语（`AtomicInt` / `Channel` / `threading.Lock`）。
+
+**Q：为什么我在普通 Python 上开了 `GIL=False`，多线程还是不快？**
+因为 GIL 是解释器层的，第三方包删不掉它——除非你用 3.13t / 3.14t。
+在标准 CPython 上，Python++ 能做到的是「自身运行时无锁 + 阻塞时释放 GIL +
+JIT 机器码执行期间释放 GIL」，能加速 I/O 重叠、通道等待、纯整数机器码计算，
+但**不会**让两段纯 Python `for` 循环同时占用两个核。这是 CPython 的物理限制，不是配置问题。
+
 **Q：支持 Mac / Linux 吗？**
 支持。C 内核用稳定 ABI（`Py_LIMITED_API=3.8`），Windows 上是 `.pyd`、
 Linux / macOS 上是 `.abi3.so`，同一个内核源码在三个平台各自编译一份即可。
@@ -692,25 +872,28 @@ macOS Intel 五个预编译 wheel，`pip install` 即得 C 加速，无需本机
 
 ## 5. 版本与验证范围
 
-- 当前版本：**1.1.0**
-- Python 要求：**3.8+**
+- 当前版本：**1.2.0**
+- Python 要求：**3.8+**（自由线程功能需要 **3.13t / 3.14t**）
 
 关于兼容性，说清楚哪些是验证过的、哪些只是设计目标：
 
 | 项目 | 状态 |
 |---|---|
-| 在 Python 3.12 / 3.14 上跑完整测试 | **已实测**，109 项全过 |
+| 在 Python 3.14（标准 GIL）上跑完整测试 | **已实测**，144 项全过 |
+| 在 Python 3.14t（自由线程）上跑完整测试 | **已实测**，144 项全过 |
 | 单个 `.pyd` 同时被 3.12 和 3.14 加载 | **已实测** |
-| 纯 Python 回退路径（`PYTHONPP_NO_NATIVE=1`） | **已实测**，109 项全过 |
-| Windows x64 原生内核（`.pyd`） | **已实测** |
+| 纯 Python 回退路径（`PYTHONPP_NO_NATIVE=1`） | **已实测**，144 项全过 |
+| Windows x64 原生内核（`.pyd` / `.cp314t-*.pyd`） | **已实测** |
 | Linux x64 / ARM64 原生内核（`.abi3.so`） | 由 CI 在 ubuntu runner 上编译 + 测试 |
 | macOS Apple Silicon / Intel 原生内核 | 由 CI 在 macos runner 上编译 + 测试 |
+| Linux / macOS 自由线程内核 | 由 CI 在 setup-python `3.14t` 上编译 + 测试 |
+| Python 3.9 / 3.12 / 3.14 跨版本兼容 | 由 CI 的三平台 × 三版本矩阵覆盖 |
 | Python 源码兼容 3.8 语法 | 已用 `ast.parse(feature_version=3.8)` 静态检查通过 |
 | 只依赖 3.8 就自带的标准库 | 已逐模块核对，无 3.9+ 专有 API |
 | 在 3.8 ~ 3.11 上实际运行 | **未实测**（本机没有这些版本的解释器） |
 
 结论：3.8 ~ 3.11 理论上兼容（语法、标准库、稳定 ABI 三条都对得上），
-但请以实际运行结果为准。
+但请以 CI 与你的实际运行结果为准。
 
 ## 6. 自己从源码构建
 
@@ -722,7 +905,8 @@ python test_pythonpp.py           # 自检
 python setup.py bdist_wheel       # 打包
 ```
 
-产物在 `dist/` 下，文件名形如 `pythonpp_plus-1.1.0-cp38-abi3-win_amd64.whl`。
+产物在 `dist/` 下，文件名形如 `pythonpp_plus-1.2.0-cp38-abi3-win_amd64.whl`；
+用自由线程解释器打包则是 `pythonpp_plus-1.2.0-cp314-cp314t-win_amd64.whl`。
 
 `cp38-abi3` 表示「Python 3.8 及以上通用」，一个文件就能覆盖 3.8 ~ 3.14。
 这个标签由 `setup.py` 里的 `get_tag()` 自动生成，不需要手动传参数 ——

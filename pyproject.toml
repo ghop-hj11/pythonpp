@@ -4,14 +4,14 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pythonpp-plus"
-version = "1.1.0"
+version = "1.2.0"
 description = "Python 语法 + C 加速：内置常用函数、中文报错、整数循环 JIT"
 readme = "README.md"
 requires-python = ">=3.8"
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [{ name = "Python++" }]
-keywords = ["python", "accelerator", "jit", "c-extension", "chinese"]
+keywords = ["python", "accelerator", "jit", "c-extension", "chinese", "gil", "free-threading", "lock-free"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
@@ -28,6 +28,7 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: Free Threading :: 3.14",
     "Topic :: Software Development :: Interpreters",
 ]
 
@@ -45,4 +46,6 @@ include-package-data = true
 zip-safe = false
 
 [tool.setuptools.package-data]
-pythonpp = ["pythonpp_native.c", "*.pyd", "*.so"]
+# 只带 C 源码。二进制由 setup.py 的 build_py 按当前解释器筛选后复制，
+# 这里再写 "*.pyd"/"*.so" 会把另一套 ABI 的产物也一起塞进 wheel。
+pythonpp = ["pythonpp_native.c"]

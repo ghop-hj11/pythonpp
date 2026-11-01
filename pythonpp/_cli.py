@@ -5,7 +5,8 @@
     pp script.pp          运行脚本
     pp -c "print(1+1)"    直接执行一段代码
     pp --bench            跑内置基准测试
-    pp --info             看当前用的是哪个内核
+    pp --info             看当前用的是哪个内核 / GIL 状态
+    pp --nogil script.pp  以 GIL=False 模式运行（JIT/通道执行期不占 GIL）
 """
 
 from __future__ import annotations
@@ -15,7 +16,7 @@ import os
 import sys
 import time
 
-from . import __version__, _cjit, _native
+from . import __version__, _cjit, _gil, _native
 from ._core import Lang
 from ._errors import explain_error
 
@@ -24,6 +25,7 @@ def _banner():
     lines = [
         f"Python++ {__version__}  ——  Python 语法 + C 加速",
         f"内核：{_native.describe()}",
+        f"GIL ：{_gil.describe()}",
         f"JIT ：{_cjit.explain_unavailable()}",
         "输入 exit() 或 Ctrl-Z 回车退出；help() 看内置函数。",
     ]
@@ -141,6 +143,12 @@ def show_info():
         print(f"  原生内核    ：{diag['backend']}（未加载，纯 Python 回退）")
         print("                提示：pip install pythonpp-plus（带预编译内核的 wheel）即可启用加速")
     print(f"  C 编译器    ：{_cjit.explain_unavailable()}")
+    status = _gil.gil_status()
+    print(f"  配置的 GIL  ：{'开' if status['configured_gil'] else '关（GIL=False）'}")
+    print(f"  解释器 GIL  ：{'开' if status['interpreter_gil'] else '关'}"
+          + ("（自由线程构建）" if status["interpreter_free_threaded"] else ""))
+    print(f"  原子/通道   ：atomics={status['atomics']} channels={status['channels']}")
+    print(f"  并行能力    ：{status['parallelism']}  —— {_gil.describe()}")
     print(f"  JIT 缓存目录：{_cjit.Compiler().cache_dir}")
     print(f"  平台/架构   ：{sys.platform} / {diag['arch']}")
     try:
@@ -181,9 +189,14 @@ def main(argv=None):
     parser.add_argument("--info", action="store_true", help="显示环境信息")
     parser.add_argument("--help-builtins", action="store_true", help="列出内置函数")
     parser.add_argument("--trace", action="store_true", help="运行结束后打印用时")
+    parser.add_argument("--nogil", action="store_true",
+                        help="以 GIL=False 模式运行（JIT 循环与通道等待期间释放 GIL）")
     parser.add_argument("--version", action="version",
                         version=f"%(prog)s {__version__}")
     args = parser.parse_args(argv)
+
+    if args.nogil:
+        _gil.configure(gil=False)
 
     if args.info:
         show_info()

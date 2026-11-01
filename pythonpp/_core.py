@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """Lang 执行引擎 + MemPool 变量池。
 
 这一版相对旧版的关键改动（都是能测出来的）：
@@ -33,7 +33,7 @@ from . import _builtins as pp_builtins
 from ._errors import PPCompileError, PPRuntimeError, explain_error
 from ._native import native
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 
 __all__ = ["Lang", "MemPool", "PoolStats", "RunResult", "__version__"]
 
@@ -223,16 +223,20 @@ class MemPool:
 
     # ---------- 内部 ----------
     def _size_of(self, value):
-        key = id(value)
-        cached = self._cache.get(key)
-        if cached is not None and cached[0] is value:
-            self._hits += 1
-            return cached[1]
+        # 缓存本身也是共享状态：GIL=False 之后必须同样加锁，
+        # 否则两个线程同时清缓存/写缓存就是数据竞争。
+        with self._lock:
+            key = id(value)
+            cached = self._cache.get(key)
+            if cached is not None and cached[0] is value:
+                self._hits += 1
+                return cached[1]
         size = native.deep_sizeof(value)
         # 缓存不能无限长，超过 512 条就整体清掉（简单但够用）
-        if len(self._cache) > 512:
-            self._cache.clear()
-        self._cache[key] = (value, size)
+        with self._lock:
+            if len(self._cache) > 512:
+                self._cache.clear()
+            self._cache[key] = (value, size)
         return size
 
     def _resolve_from_caller(self, name):
@@ -300,13 +304,18 @@ class Lang:
     变量名也是字典键，所以可以 ``lang["x"]``、``del lang["x"]``。
     """
 
-    def __init__(self, pool=None, builtins_=None, capture_stdout=False):
+    def __init__(self, pool=None, builtins_=None, capture_stdout=False, gil=None):
         self.pool = pool if pool is not None else MemPool()
         self._extra = dict(builtins_ or {})
         self._capture = capture_stdout
-        self._ns = self._new_namespace()
         self._compiled = {}         # 源码 -> code 对象，重复 run 直接复用
         self._last_error = None
+        # gil=None 表示沿用全局配置；gil=False 等价于 configure(gil=False)
+        if gil is not None:
+            from ._gil import configure
+
+            configure(gil)
+        self._ns = self._new_namespace()
 
     # ---------- 命名空间 ----------
     def _new_namespace(self):
@@ -411,7 +420,7 @@ class Lang:
         只处理自上次以来新出现/被改过的名字，不再整表重算。
         """
         builtin_names = pp_builtins.names() | set(self._extra)
-        pool_store = self.pool._store
+        pool_store = dict(self.pool.items())   # 加锁拿一份快照
         seen = set()
         for name, value in list(self._ns.items()):
             if name in _RESERVED or name in builtin_names:
@@ -426,7 +435,7 @@ class Lang:
             except MemoryError:
                 pass
         # 命名空间里被 del 掉的变量，池子里也要同步消失
-        for name in [n for n in pool_store if n not in seen and n not in self._ns]:
+        for name in [n for n in self.pool.keys() if n not in seen and n not in self._ns]:
             self.pool.remove(name)
 
     # ---------- Linux 风格操作（旧版 API，保留） ----------

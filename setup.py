@@ -17,7 +17,9 @@ from __future__ import annotations
 
 import os
 import platform
+import re
 import sys
+import sysconfig
 from pathlib import Path
 
 from setuptools import setup
@@ -28,9 +30,38 @@ HERE = Path(__file__).resolve().parent
 PKG = HERE / "pythonpp"
 
 
+# 自由线程产物在 Windows 上是 _pythonpp_native.cp314t-win_amd64.pyd，
+# 在 Linux/macOS 上是 _pythonpp_native.cpython-314t-<平台>.so，两种都要认。
+_FREE_THREADED_SUFFIX = re.compile(r"_pythonpp_native\.(?:cpython-|cp)\d+t[-.]")
+
+
+def _is_free_threaded():
+    """当前解释器是不是自由线程构建。"""
+    try:
+        return bool(sysconfig.get_config_var("Py_GIL_DISABLED"))
+    except Exception:  # pragma: no cover
+        return False
+
+
+def _free_threaded_tag():
+    """从产物文件名里取自由线程标签（例如 cp314t），没有就返回 None。"""
+    for path in PKG.glob("_pythonpp_native.cp*t*"):
+        match = re.search(r"\.cp(\d+t)[-.]", path.name)
+        if match:
+            return "cp" + match.group(1)
+    return None
+
+
 def _native_files():
-    """当前目录下已经编译好的原生扩展。"""
-    return sorted(list(PKG.glob("*.pyd")) + list(PKG.glob("*.so")))
+    """当前解释器用得上的原生扩展。
+
+    自由线程和标准构建的产物是不同文件（PyObject 布局不同），
+    所以这里按当前解释器筛一遍，避免把另一个 ABI 的二进制塞进 wheel。
+    """
+    files = sorted(list(PKG.glob("*.pyd")) + list(PKG.glob("*.so")))
+    want_free = _is_free_threaded()
+    picked = [p for p in files if bool(_FREE_THREADED_SUFFIX.search(p.name)) == want_free]
+    return picked
 
 
 def _platform_tag() -> str:
@@ -93,6 +124,16 @@ class bdist_wheel(_bdist_wheel):
         if not _native_files():
             # 纯 Python 回退版：任何平台、任何 3.8+ 都能装
             return ("py3", "none", "any")
+        # 自由线程构建不能用稳定 ABI，wheel 标签必须是 cp314-cp314t-<平台>，
+        # 否则 pip 要么装不上、要么把它当成普通 GIL 版装到错误解释器上。
+        # 注意：只有当**当前解释器**是自由线程时才算 —— 同一个目录里可能同时放着
+        # 两套产物，光看文件名会把标准构建误标成 cp314t。
+        if _is_free_threaded():
+            # 自由线程的 ABI 标签是 cp314t，python 标签仍是 cp314：
+            # pip 认识的组合是 cp314-cp314t-<平台>（不是 cp314t-cp314t）。
+            abi = _free_threaded_tag() or \
+                f"cp{sys.version_info[0]}{sys.version_info[1]}t"
+            return (abi[:-1], abi, _platform_tag())
         # 稳定 ABI：cp38-abi3-<平台>，一个文件覆盖 3.8 ~ 3.14。
         # 这里必须写死 cp38（对应 Py_LIMITED_API=0x030800），
         # 不能用当前解释器的版本号，否则 wheel 就只能装在当前版本上。
